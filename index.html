@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Coletor Itabaiana 3.0</title>
+<style>*{box-sizing:border-box}body{margin:0;background:#f1f4f8;font-family:Arial,sans-serif;color:#203047}header{background:#123b70;color:#fff;padding:20px;text-align:center}header h1{margin:0 0 6px}main{max-width:520px;margin:18px auto;padding:12px}.card{background:#fff;padding:19px;border-radius:14px;margin-bottom:14px;box-shadow:0 2px 8px #0001}label{display:block;margin:12px 0 6px;font-weight:bold}input,button{width:100%;padding:13px;border-radius:9px;font-size:16px}input{border:1px solid #bbb}button{border:0;background:#123b70;color:#fff;font-weight:bold;margin-top:12px;cursor:pointer}button:disabled{background:#999}.secondary{background:#16835d}.muted{color:#637083;font-size:14px}.item{border-bottom:1px solid #eee;padding:11px 0;overflow-wrap:anywhere}.hidden{display:none}.error{color:#b3261e}.success{color:#116b4d}.info{background:#edf4ff;padding:12px;border-radius:9px;line-height:1.5}.inline{display:flex;gap:10px}.inline button{flex:1}.small{font-size:13px}.item-actions{display:flex;gap:8px;margin-top:8px}.item-actions button{width:auto;flex:1;font-size:14px;padding:10px}.danger{background:#b3261e}.empty{color:#637083;font-size:14px}.edit-box{margin-top:10px}.edit-box input{margin-top:6px}.top-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.top-actions #usuario{flex:1}.history-button{width:auto;margin:0;background:#16835d;font-size:14px;padding:10px 12px}.history-button[aria-expanded="true"]{background:#105c42}.history-panel{border:2px solid #d6e9df}.history-panel h3{margin-top:0}.sync-button{width:auto;margin:0;background:#123b70;font-size:14px;padding:10px 12px}.sync-button[aria-expanded="true"]{background:#245c9c}.sync-panel{border:2px solid #dbe5f5}.sync-panel h3{margin-top:0}</style></head><body>
+<header><h1>Coletor Itabaiana</h1><div>Controle de Estoque 3.0</div></header><main>
+<section class="card" id="setup"><h2>Configuração inicial</h2><p class="muted">Informe a URL do projeto Supabase e a chave <strong>publicável</strong>. Nunca use uma chave secreta.</p><label for="url">URL do projeto</label><input id="url" type="url" placeholder="https://SEU-PROJETO.supabase.co" autocomplete="off"><label for="key">Chave publicável (sb_publishable_...)</label><input id="key" type="text" placeholder="sb_publishable_..." autocomplete="off"><button id="configurar">Salvar configuração</button><p id="setupMsg" role="status"></p></section>
+<section class="card hidden" id="auth"><h2>Entrar</h2><label for="email">E-mail</label><input id="email" type="email" autocomplete="username"><label for="senha">Senha</label><input id="senha" type="password" autocomplete="current-password"><button id="entrar">Entrar</button><button id="trocarConfig" class="secondary">Alterar conexão</button><p id="authMsg" role="status"></p></section>
+<section class="card hidden" id="app"><div class="top-actions"><strong id="usuario">Usuário</strong><button id="abrirSync" class="sync-button" type="button" aria-expanded="false" aria-controls="sync" title="Abrir sincronização">⚙️ <span id="totalPendentesTopo">0</span></button><button id="abrirSincronizadas" class="history-button" type="button" aria-expanded="false" aria-controls="concluidas">📋 Histórico <span id="totalSincronizadas">0</span></button><button id="sair" style="width:auto;margin:0;padding:10px 12px">Sair</button></div><p class="muted" id="perfil"></p><h2>Contagem de estoque</h2><label for="codigo">Código de barras</label><input id="codigo" type="text" inputmode="numeric" autocomplete="off" placeholder="Digite ou leia o código"><button id="buscar">Consultar produto</button><button id="abrirCamera" class="secondary" type="button">📷 Ler código pela câmera</button><section id="scannerArea" class="hidden" aria-label="Leitor de código de barras"><div id="scannerViewport" style="width:100%;max-width:420px;margin:12px auto"></div><p id="scannerMsg" class="muted" role="status"></p><button id="fecharCamera" type="button">Fechar câmera</button></section><div class="info hidden" id="produto"></div><label for="quantidade">Quantidade encontrada</label><input id="quantidade" type="number" min="0" step="0.001" placeholder="Ex.: 12"><button id="salvar">Salvar contagem</button><p id="mensagem" role="status"></p></section>
+<section class="card hidden history-panel" id="concluidas"><h3>✅ Contagens sincronizadas</h3><p class="muted small">Histórico enviado ao Supabase. Somente leitura neste aparelho.</p><div id="listaSincronizadas"></div><button id="fecharSincronizadas" class="secondary" type="button">Fechar histórico</button></section>
+<section class="card hidden sync-panel" id="sync"><h3>⚙️ Sincronização</h3><p class="muted" id="conexao"></p><p id="pendentes"></p><button class="secondary" id="sincronizar">Sincronizar agora</button><p id="syncMsg" role="status"></p><p class="muted small">Contagens offline ficam guardadas neste navegador. Não limpe os dados do navegador antes de sincronizar.</p><button id="fecharSync" type="button">Fechar sincronização</button></section>
+<section class="card hidden" id="historico"><h3>Contagens pendentes</h3><p class="muted small">Você pode editar ou apagar antes de sincronizar.</p><div id="lista"></div></section>
+</main><script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script><script>
+'use strict';
+const $=id=>document.getElementById(id);let client=null, currentUser=null, profile=null, currentProduct=null;
+const CONFIG='coletor_itabaiana_supabase_v1', COUNTS='contagens_itabaiana';
+function show(id,yes){$(id).classList.toggle('hidden',!yes)}
+function msg(id,text,error=false){$(id).textContent=text;$(id).className=error?'error':'success'}
+function readCounts(){try{const v=JSON.parse(localStorage.getItem(COUNTS)||'[]');return Array.isArray(v)?v:[]}catch{return []}}
+function saveCounts(v){localStorage.setItem(COUNTS,JSON.stringify(v))}
+function config(){try{return JSON.parse(localStorage.getItem(CONFIG)||'null')}catch{return null}}
+function initClient(){const c=config();if(!c)return false;if(!window.supabase){msg('setupMsg','A biblioteca Supabase não carregou. Conecte à internet e atualize a página.',true);return false}try{client=window.supabase.createClient(c.url,c.key);return true}catch(e){msg('setupMsg','Falha na configuração: '+e.message,true);return false}}
+function screen(){show('setup',!config());show('auth',!!config()&&!currentUser);show('app',!!currentUser);mostrarSync();show('historico',!!currentUser);mostrarHistorico();if(currentUser)update()}
+$('configurar').onclick=()=>{let url=$('url').value.trim().replace(/\/+$/,'').replace(/\/rest\/v1$/,'');let key=$('key').value.trim();if(!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(url)||!key.startsWith('sb_publishable_')){msg('setupMsg','Confira a URL (.supabase.co) e a chave publicável.',true);return}localStorage.setItem(CONFIG,JSON.stringify({url,key}));if(initClient()){screen();msg('authMsg','Conexão configurada. Entre com seu e-mail e senha.')}};
+$('trocarConfig').onclick=()=>{localStorage.removeItem(CONFIG);client=null;currentUser=null;profile=null;screen()};
+async function loadProfile(){const {data,error}=await client.from('perfis').select('nome,tipo,ativo').eq('id',currentUser.id).maybeSingle();if(error)throw error;if(!data||!data.ativo)throw Error('Seu usuário não tem perfil ativo. Peça ao administrador para liberar.');profile=data;$('usuario').textContent=data.nome;$('perfil').textContent=data.tipo==='admin_geral'?'Administrador Geral':'Funcionário';}
+$('entrar').onclick=async()=>{if(!client)return;msg('authMsg','Entrando...');$('entrar').disabled=true;try{const {data,error}=await client.auth.signInWithPassword({email:$('email').value.trim(),password:$('senha').value});if(error)throw error;currentUser=data.user;await loadProfile();$('senha').value='';screen();completarNomesAntigos();}catch(e){await client.auth.signOut();currentUser=null;profile=null;msg('authMsg',e.message,true)}finally{$('entrar').disabled=false}};
+$('sair').onclick=async()=>{await pararCamera();if(client)await client.auth.signOut();currentUser=null;profile=null;currentProduct=null;show('produto',false);screen()};
+async function lookup(){const cod=$('codigo').value.trim();if(!cod){msg('mensagem','Digite um código de barras.',true);return}currentProduct=null;show('produto',false);if(!navigator.onLine){msg('mensagem','Sem internet: é possível salvar a contagem, mas não consultar o cadastro.',true);return}if(!currentUser){msg('mensagem','Entre para consultar produtos.',true);return}msg('mensagem','Consultando...');$('buscar').disabled=true;try{let {data,error}=await client.from('produtos').select('codigo_barras,descricao,preco_venda,estoque_atual').eq('codigo_barras',cod).limit(1);if(error)throw error;if(!data||!data.length){msg('mensagem','Produto não encontrado. Confira o código.',true);return}currentProduct=data[0];$('produto').replaceChildren();const title=document.createElement('strong');title.textContent=currentProduct.descricao;const details=document.createElement('div');details.textContent=`Preço: ${Number(currentProduct.preco_venda||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'})} | Estoque atual: ${currentProduct.estoque_atual??'—'}`;$('produto').append(title,details);show('produto',true);msg('mensagem','Produto encontrado.')}catch(e){msg('mensagem','Erro na consulta: '+e.message,true)}finally{$('buscar').disabled=false}}
+
+// Leitor com suporte a EAN-13, EAN-8, UPC e outros formatos comuns.
+let cameraScanner=null, cameraIniciando=false;
+function carregarLeitor(){
+  if(window.Html5Qrcode)return Promise.resolve();
+  return new Promise((resolve,reject)=>{
+    const script=document.createElement('script');
+    script.src='https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js';
+    script.onload=()=>window.Html5Qrcode?resolve():reject(new Error('Biblioteca de leitura indisponível'));
+    script.onerror=()=>reject(new Error('Não foi possível carregar o leitor. Verifique a internet.'));
+    document.head.appendChild(script);
+  });
+}
+async function pararCamera(){
+  cameraIniciando=false;
+  const scanner=cameraScanner;
+  cameraScanner=null;
+  if(scanner){try{await scanner.stop()}catch(e){}try{scanner.clear()}catch(e){}}
+  show('scannerArea',false);
+  $('abrirCamera').disabled=false;
+}
+$('fecharCamera').onclick=pararCamera;
+$('abrirCamera').onclick=async()=>{
+  if(cameraIniciando||cameraScanner)return;
+  if(!currentUser){msg('mensagem','Entre antes de usar a câmera.',true);return;}
+  if(!window.isSecureContext){msg('mensagem','Para abrir a câmera no iPhone, publique o aplicativo em HTTPS. Arquivos locais podem não funcionar.',true);return;}
+  if(!navigator.mediaDevices?.getUserMedia){msg('mensagem','Este navegador não oferece acesso à câmera. Tente o Safari no iPhone com HTTPS.',true);return;}
+  cameraIniciando=true;
+  $('abrirCamera').disabled=true;
+  show('scannerArea',true);
+  $('scannerMsg').textContent='Preparando a câmera...';
+  try{
+    await carregarLeitor();
+    if(!cameraIniciando)return;
+    const formats=window.Html5QrcodeSupportedFormats;
+    cameraScanner=new window.Html5Qrcode('scannerViewport',{formatsToSupport:[formats.EAN_13,formats.EAN_8,formats.UPC_A,formats.UPC_E,formats.CODE_128,formats.ITF,formats.CODE_39],verbose:false});
+    let reconhecido=false;
+    await cameraScanner.start({facingMode:'environment'},{fps:10,qrbox:{width:260,height:150}},async(decoded)=>{
+      if(reconhecido)return;
+      reconhecido=true;
+      await pararCamera();
+      $('codigo').value=decoded.trim();
+      $('codigo').dispatchEvent(new Event('input'));
+      msg('mensagem','Código lido: '+decoded);
+      await lookup();
+      $('quantidade').focus();
+    },()=>{});
+    $('scannerMsg').textContent='Aponte a câmera para o código de barras.';
+  }catch(e){
+    await pararCamera();
+    msg('mensagem','Não foi possível abrir a câmera: '+(e?.message||e)+'. Verifique a permissão do navegador e o HTTPS.',true);
+  }finally{cameraIniciando=false;}
+};
+$('buscar').onclick=lookup;$('codigo').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();lookup()}});$('codigo').addEventListener('input',()=>{currentProduct=null;show('produto',false)});
+$('salvar').onclick=()=>{if(!currentUser){msg('mensagem','Faça login antes de contar.',true);return}const cod=$('codigo').value.trim();const raw=$('quantidade').value.trim();const qtd=Number(raw);if(!cod||!raw||!Number.isFinite(qtd)||qtd<0){msg('mensagem','Informe código e quantidade válida.',true);return}const counts=readCounts();counts.push({id:crypto.randomUUID(),codigo:cod,quantidade:qtd,contado_em:new Date().toISOString(),usuario_id:currentUser.id,nome_produto:(currentProduct && currentProduct.codigo_barras===cod ? currentProduct.descricao : ''),sincronizado:false});try{saveCounts(counts)}catch{msg('mensagem','Não foi possível gravar no aparelho. Verifique o armazenamento.',true);return}msg('mensagem','Contagem salva neste aparelho!');$('codigo').value='';$('quantidade').value='';currentProduct=null;show('produto',false);update();$('codigo').focus()};
+let syncEmAndamento=false, historicoAberto=false, syncAberta=false;
+function mostrarSync(){show('sync',!!currentUser&&syncAberta);$('abrirSync').setAttribute('aria-expanded',String(syncAberta));}
+$('abrirSync').onclick=()=>{syncAberta=!syncAberta;mostrarSync();if(syncAberta)$('sync').scrollIntoView({behavior:'smooth',block:'start'});};
+$('fecharSync').onclick=()=>{syncAberta=false;mostrarSync();$('abrirSync').focus();};
+function mostrarHistorico(){show('concluidas',!!currentUser&&historicoAberto);$('abrirSincronizadas').setAttribute('aria-expanded',String(historicoAberto));}
+$('abrirSincronizadas').onclick=()=>{historicoAberto=!historicoAberto;mostrarHistorico();if(historicoAberto)$('concluidas').scrollIntoView({behavior:'smooth',block:'start'});};
+$('fecharSincronizadas').onclick=()=>{historicoAberto=false;mostrarHistorico();$('abrirSincronizadas').focus();};
+function atualizarItem(item, destino){
+  const el=document.createElement('div');el.className='item';
+  const titulo=document.createElement('strong');titulo.textContent=item.nome_produto||'Produto não identificado';
+  const detalhes=document.createElement('div');detalhes.className='muted';detalhes.textContent='Código: '+item.codigo;
+  const resumo=document.createElement('div');resumo.textContent='Quantidade: '+item.quantidade+' — '+(item.sincronizado?'Sincronizada':'Pendente');
+  el.append(titulo,detalhes,resumo);
+  if(!item.sincronizado){
+    const acoes=document.createElement('div');acoes.className='item-actions';
+    const editar=document.createElement('button');editar.textContent='Editar';editar.disabled=syncEmAndamento;
+    const apagar=document.createElement('button');apagar.textContent='Apagar';apagar.className='danger';apagar.disabled=syncEmAndamento;
+    editar.onclick=()=>{
+      if(syncEmAndamento)return;
+      if(el.querySelector('.edit-box'))return;
+      const box=document.createElement('div');box.className='edit-box';
+      const label=document.createElement('label');label.textContent='Nova quantidade';
+      const input=document.createElement('input');input.type='number';input.min='0';input.step='0.001';input.value=item.quantidade;
+      const botoes=document.createElement('div');botoes.className='item-actions';
+      const confirmar=document.createElement('button');confirmar.textContent='Salvar alteração';
+      const cancelar=document.createElement('button');cancelar.textContent='Cancelar';cancelar.className='secondary';
+      cancelar.onclick=()=>box.remove();
+      confirmar.onclick=()=>{
+        const valor=input.value.trim();const numero=Number(valor);
+        if(!valor||!Number.isFinite(numero)||numero<0){alert('Informe uma quantidade válida.');return}
+        if(syncEmAndamento)return;
+        const dados=readCounts();const atual=dados.find(x=>x.id===item.id&&x.usuario_id===currentUser.id);
+        if(!atual||atual.sincronizado){alert('Esta contagem já foi sincronizada ou não existe mais.');update();return}
+        atual.quantidade=numero;
+        try{saveCounts(dados);update()}catch{alert('Erro ao salvar alteração no aparelho.')}
+      };
+      botoes.append(confirmar,cancelar);box.append(label,input,botoes);el.appendChild(box);input.focus();
+    };
+    apagar.onclick=()=>{
+      if(syncEmAndamento)return;
+      if(!confirm('Apagar esta contagem pendente? Esta ação não pode ser desfeita.'))return;
+      const dados=readCounts();const atual=dados.find(x=>x.id===item.id&&x.usuario_id===currentUser.id);
+      if(!atual||atual.sincronizado){alert('Esta contagem já foi sincronizada ou não existe mais.');update();return}
+      try{saveCounts(dados.filter(x=>x.id!==item.id));update()}catch{alert('Erro ao apagar contagem no aparelho.')}
+    };
+    acoes.append(editar,apagar);el.appendChild(acoes);
+  }
+  destino.appendChild(el);
+}
+function update(){
+  const mine=readCounts().filter(x=>x.usuario_id===currentUser?.id);
+  const pending=mine.filter(x=>!x.sincronizado).reverse();
+  const synced=mine.filter(x=>x.sincronizado).reverse();
+  $('pendentes').textContent='Contagens pendentes: '+pending.length;$('totalPendentesTopo').textContent=pending.length;
+  $('conexao').textContent=navigator.onLine?'Conexão detectada':'Sem conexão';
+  $('totalSincronizadas').textContent=String(synced.length);$('lista').replaceChildren();$('listaSincronizadas').replaceChildren();
+  if(!pending.length){const p=document.createElement('p');p.className='empty';p.textContent='Nenhuma contagem pendente.';$('lista').appendChild(p)}
+  if(!synced.length){const p=document.createElement('p');p.className='empty';p.textContent='Nenhuma contagem sincronizada neste aparelho.';$('listaSincronizadas').appendChild(p)}
+  pending.slice(0,80).forEach(x=>atualizarItem(x,$('lista')));
+  synced.slice(0,80).forEach(x=>atualizarItem(x,$('listaSincronizadas')));
+}
+async function completarNomesAntigos(){if(!client||!currentUser||!navigator.onLine)return;const counts=readCounts();const mine=counts.filter(x=>x.usuario_id===currentUser.id&&!x.nome_produto);const codigos=[...new Set(mine.map(x=>x.codigo).filter(Boolean))];if(!codigos.length)return;let alterou=false;for(let i=0;i<codigos.length;i+=50){const lote=codigos.slice(i,i+50);try{const {data,error}=await client.from('produtos').select('codigo_barras,descricao').in('codigo_barras',lote);if(error)continue;const nomes=new Map((data||[]).map(p=>[p.codigo_barras,p.descricao]));for(const item of counts){if(item.usuario_id===currentUser.id&&!item.nome_produto&&nomes.has(item.codigo)){item.nome_produto=nomes.get(item.codigo);alterou=true}}}catch{}}if(alterou){try{const latest=readCounts();const nomes=new Map(counts.filter(x=>x.nome_produto).map(x=>[x.id,x.nome_produto]));for(const item of latest){if(!item.nome_produto&&nomes.has(item.id))item.nome_produto=nomes.get(item.id)}saveCounts(latest);update()}catch{}}}
+$('sincronizar').onclick=async()=>{if(!currentUser)return;if(!navigator.onLine){msg('syncMsg','Sem conexão. Tente quando voltar a internet.',true);return}const pending=readCounts().filter(x=>x.usuario_id===currentUser.id&&!x.sincronizado);if(!pending.length){msg('syncMsg','Nenhuma contagem pendente.');return}syncEmAndamento=true;$('sincronizar').disabled=true;update();msg('syncMsg',`Enviando ${pending.length} contagem(ns)...`);let done=0;try{for(const item of pending){const {error}=await client.from('contagens').insert({id:item.id,codigo_barras:item.codigo,quantidade:item.quantidade,usuario_id:currentUser.id,contado_em:item.contado_em});if(error){if(error.code==='23505'){/* ID já enviado anteriormente */}else throw error}const latest=readCounts();const saved=latest.find(x=>x.id===item.id&&x.usuario_id===currentUser.id);if(saved){saved.sincronizado=true;saveCounts(latest)}done++;update()}msg('syncMsg',`${done} contagem(ns) sincronizada(s).`)}catch(e){msg('syncMsg',`${done} enviada(s). Erro: ${e.message}`,true)}finally{syncEmAndamento=false;$('sincronizar').disabled=false;update()}};
+window.addEventListener('online',update);window.addEventListener('offline',update);
+(async()=>{const c=config();if(c){$('url').value=c.url;$('key').value=c.key;if(initClient()){try{const {data}=await client.auth.getUser();if(data?.user){currentUser=data.user;await loadProfile()}}catch{currentUser=null;profile=null}}}screen();if(currentUser)completarNomesAntigos()})();
+</script></body></html>
