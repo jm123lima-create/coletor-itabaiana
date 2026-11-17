@@ -473,11 +473,11 @@ $('importarTabela').onclick=async()=>{
   if(!adminAutorizado()){msg('importMsg','Acesso exclusivo do Admin Geral.',true);return;}
   if(!produtosPrevia.length){msg('importMsg','Primeiro confira um arquivo.',true);return;}
   if(!navigator.onLine){msg('importMsg','Conecte-se à internet para atualizar a tabela.',true);return;}
-  if(!confirm(`ATENÇÃO: atualizar ${produtosPrevia.length} produto(s) pelo CÓDIGO INTERNO no Supabase? Não serão criados nem excluídos produtos. Os dados atuais dos produtos encontrados serão substituídos.`))return;
+  if(!confirm(`Atualizar a tabela do Brajan com ${produtosPrevia.length} produto(s)? Os produtos existentes serão atualizados pelo CÓDIGO INTERNO, e os códigos novos serão cadastrados. Nenhum produto ou contagem será excluído.`))return;
   const botao=$('importarTabela');botao.disabled=true;$('preverTabela').disabled=true;
-  let enviados=0;
+  let atualizados=0,criados=0;
   try{
-    // Verificação de existência ANTES de qualquer gravação; não insere IDs desconhecidos.
+    // Procurar por código interno; não alterar os IDs de produtos já existentes.
     const ids=new Map();
     for(let i=0;i<produtosPrevia.length;i+=100){
       if(!adminAutorizado())throw Error('Sessão de administrador não está mais ativa.');
@@ -488,20 +488,61 @@ $('importarTabela').onclick=async()=>{
       msg('importMsg',`Conferidos ${Math.min(i+100,produtosPrevia.length)} de ${produtosPrevia.length} códigos internos...`);
     }
     const ausentes=produtosPrevia.filter(p=>!ids.has(p.codigo_interno));
-    if(ausentes.length)throw Error(`${ausentes.length} código(s) ainda não existem no banco (ex.: ${ausentes.slice(0,5).map(p=>p.codigo_interno).join(', ')}). Nenhuma alteração foi enviada. Precisamos tratar os novos produtos separadamente.`);
-    for(let i=0;i<produtosPrevia.length;i+=100){
-      if(!adminAutorizado())throw Error('Sessão de administrador não está mais ativa.');
-      const lote=produtosPrevia.slice(i,i+100).map(p=>({id:ids.get(p.codigo_interno),...p}));
-      const {error}=await client.from('produtos').upsert(lote,{onConflict:'id'});
-      if(error)throw error;
-      enviados+=lote.length;
-      msg('importMsg',`Atualizados ${enviados} de ${produtosPrevia.length} produtos...`);
+    if(ausentes.length){
+      if(!confirm(`${ausentes.length} produto(s) novo(s) foram encontrados (ex.: ${ausentes.slice(0,5).map(p=>p.codigo_interno).join(', ')}). Deseja cadastrá-los no Supabase antes de atualizar os demais?`)){
+        msg('importMsg','Operação cancelada. Nenhuma alteração enviada.');return;
+      }
+      // Inserir apenas produtos que não existiam. A política RLS do Supabase
+      // deve permitir INSERT na tabela produtos para admin_geral.
+      for(let i=0;i<ausentes.length;i+=50){
+        if(!adminAutorizado())throw Error('Sessão de administrador não está mais ativa.');
+        const lote=ausentes.slice(i,i+50);
+        const {error}=await client.from('produtos').insert(lote);
+        if(error)throw Error(`Não foi possível cadastrar novos produtos: ${error.message}. Confira a permissão INSERT do Admin Geral na tabela produtos e possíveis códigos de barras duplicados.`);
+        criados+=lote.length;
+        msg('importMsg',`Cadastrados ${criados} de ${ausentes.length} produtos novos...`);
+      }
+      // Buscar IDs gerados pelo banco antes de atualizar; nunca inventar IDs.
+      for(let i=0;i<ausentes.length;i+=100){
+        const codigos=ausentes.slice(i,i+100).map(p=>p.codigo_interno);
+        const {data,error}=await client.from('produtos').select('id,codigo_interno').in('codigo_interno',codigos);
+        if(error)throw error;
+        for(const p of data||[])ids.set(String(p.codigo_interno),p.id);
+      }
     }
-    msg('importMsg',`Tabela geral atualizada: ${enviados} produto(s) existentes. Nenhum produto foi criado ou excluído.`);
+    const semId=produtosPrevia.filter(p=>!ids.has(p.codigo_interno));
+    if(semId.length)throw Error(`Não foi possível localizar os IDs de ${semId.length} produto(s) após o cadastro. Verifique as permissões SELECT no Supabase.`);
+    // O campo id é GENERATED ALWAYS AS IDENTITY: jamais enviá-lo em INSERT/UPSERT.
+    // UPDATE por código interno evita sobrescrever o id e dispensa constraint UNIQUE.
+    // Limitar a concorrência para não sobrecarregar o Supabase.
+    const total=produtosPrevia.length;
+    let proximo=0;
+    let falha=null;
+    const atualizar=async()=>{
+      while(proximo<total && !falha){
+        if(!adminAutorizado()){falha=Error('Sessão de administrador não está mais ativa.');break;}
+        const indice=proximo++;
+        const p=produtosPrevia[indice];
+        const {error}=await client.from('produtos').update({
+          codigo_barras:p.codigo_barras,
+          descricao:p.descricao,
+          preco_venda:p.preco_venda,
+          estoque_atual:p.estoque_atual,
+          atualizado_em:new Date().toISOString()
+        }).eq('id',ids.get(p.codigo_interno));
+        if(error){falha=Error(`Código interno ${p.codigo_interno}: ${error.message}`);break;}
+        atualizados++;
+        if(atualizados%100===0 || atualizados===total){
+          msg('importMsg',`Atualizados ${atualizados} de ${total} produtos...`);
+        }
+      }
+    };
+    await Promise.all(Array.from({length:12},()=>atualizar()));
+    if(falha)throw falha;
+    msg('importMsg',`Tabela atualizada com sucesso: ${atualizados} produto(s) atualizados, incluindo ${criados} novo(s) cadastrados nesta execução. Nenhum produto nem contagem foi excluído.`);
     limparPrevia();$('arquivoTabela').value='';
-  }catch(e){msg('importMsg',`${enviados} produto(s) atualizado(s) antes da falha. Erro: ${e.message}`,true);}
+  }catch(e){msg('importMsg',`${criados} novo(s) cadastrado(s); ${atualizados} produto(s) atualizado(s) antes da falha. Erro: ${e.message}`,true);}
   finally{botao.disabled=false;$('preverTabela').disabled=false;}
-
 };
 
 $('sincronizar').onclick=async()=>{if(!currentUser)return;if(!navigator.onLine){msg('syncMsg','Sem conexão. Tente quando voltar a internet.',true);return}const pending=readCounts().filter(x=>x.usuario_id===currentUser.id&&!x.sincronizado);if(!pending.length){msg('syncMsg','Nenhuma contagem pendente.');return}syncEmAndamento=true;$('sincronizar').disabled=true;update();msg('syncMsg',`Enviando ${pending.length} contagem(ns)...`);let done=0;try{for(const item of pending){const {error}=await client.from('contagens').insert({id:item.id,codigo_barras:item.codigo,quantidade:item.quantidade,usuario_id:currentUser.id,contado_em:item.contado_em});if(error){if(error.code==='23505'){/* ID já enviado anteriormente */}else throw error}const latest=readCounts();const saved=latest.find(x=>x.id===item.id&&x.usuario_id===currentUser.id);if(saved){saved.sincronizado=true;saveCounts(latest)}done++;update()}msg('syncMsg',`${done} contagem(ns) sincronizada(s).`)}catch(e){msg('syncMsg',`${done} enviada(s). Erro: ${e.message}`,true)}finally{syncEmAndamento=false;$('sincronizar').disabled=false;update()}};
